@@ -9,15 +9,17 @@ from reportlab.lib.pagesizes import letter
 from math import ceil, sqrt
 import tempfile
 import subprocess
+import platform
 
 class ImageFrame(ttk.Frame):
-    def __init__(self, parent, image_path):
-        super().__init__(parent)
+    def __init__(self, parent, image_path, app):
+        super().__init__(parent, borderwidth=1, relief=tk.SOLID)
+        self.app = app
         self.image_path = image_path
         self.original_image = Image.open(image_path)
         self.photo = None
-        self.image_label = ttk.Label(self)
-        self.image_label.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        self.image_label = ttk.Label(self, anchor='nw')
+        self.image_label.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
         
         # Create delete button
         self.delete_button = ttk.Button(self, text="×", width=3, 
@@ -32,8 +34,7 @@ class ImageFrame(ttk.Frame):
         self.image_label.bind("<Leave>", self.hide_delete)
         
     def on_delete(self):
-        if hasattr(self.master, 'master') and hasattr(self.master.master, 'app'):
-            self.master.master.app.remove_image(self)
+        self.app.remove_image(self)
         self.destroy()
         
     def show_delete(self, event=None):
@@ -117,10 +118,24 @@ class CheatSheetCreator:
         next_button = ttk.Button(controls_frame, text="→", width=3,
                                command=self.next_page)
         next_button.pack(side=tk.LEFT, padx=2)
-        
+
+        # Margin control
+        ttk.Label(controls_frame, text="Margin (pts):", ).pack(side=tk.LEFT, padx=(15, 5))
+        self.margin_var = tk.IntVar(value=36) # Default 0.5 inch = 36 pts
+        margin_spin = ttk.Spinbox(controls_frame, from_=0, to=144, 
+                                width=5, textvariable=self.margin_var)
+        margin_spin.pack(side=tk.LEFT, padx=5)
+        # Note: Margin changes don't dynamically update the Tkinter layout preview,
+        # only the PDF output/preview.
+
         # Export button
-        export_button = ttk.Button(controls_frame, text="Preview PDF",
-                                 command=self.show_preview)
+        preview_button = ttk.Button(controls_frame, text="Preview PDF",
+                                 command=self.preview_pdf)
+        preview_button.pack(side=tk.RIGHT, padx=5)
+        
+        # Add Export PDF button
+        export_button = ttk.Button(controls_frame, text="Export PDF",
+                                 command=self.export_pdf)
         export_button.pack(side=tk.RIGHT, padx=5)
         
         # Create page frame (fixed size to match actual page)
@@ -312,35 +327,45 @@ class CheatSheetCreator:
         
         # Create image frames
         for path, _ in images:
-            frame = ImageFrame(self.image_frame, path)
-            frame.master.app = self  # Add reference to app
+            frame = ImageFrame(self.image_frame, path, self)
             self.image_frames.append(frame)
             
         self.update_layout()
         
-    def export_pdf(self):
+    def export_pdf(self, file_path=None):
         if not self.image_frames:
             print("No images to export")
-            return
-            
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=".pdf",
-            filetypes=[("PDF files", "*.pdf")]
-        )
-        
-        if not file_path:
-            return
-            
+            messagebox.showwarning("No Images", "There are no images to export.")
+            return None
+
+        # Ask for file path only if not provided (for actual export)
+        is_temp_file = file_path is not None
+        if not is_temp_file:
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".pdf",
+                filetypes=[("PDF files", "*.pdf")]
+            )
+            if not file_path:
+                return None
+
         try:
             # Create PDF
             c = canvas.Canvas(file_path, pagesize=letter)
             page_width, page_height = letter
             
-            # Calculate margins (0.5 inch on each side)
-            margin = 36  # 0.5 inch = 36 points
+            # Calculate margins (use variable)
+            margin = self.margin_var.get()
+            if margin < 0: margin = 0 # Ensure non-negative margin
             usable_width = page_width - 2 * margin
             usable_height = page_height - 2 * margin
             
+            # Ensure usable dimensions are positive
+            if usable_width <= 0 or usable_height <= 0:
+                messagebox.showerror("Export Error", f"Margins ({margin} pts) are too large for the page size.")
+                if is_temp_file and os.path.exists(file_path):
+                     os.unlink(file_path) # Clean up temp file on error
+                return None
+
             total_pages = self.page_var.get()
             images_per_page = ceil(len(self.image_frames) / total_pages)
             
@@ -382,135 +407,65 @@ class CheatSheetCreator:
                         img_width = cell_width
                         img_height = cell_width / aspect_ratio
                     
-                    # Center image in cell
-                    x += (cell_width - img_width) / 2
-                    y += (cell_height - img_height) / 2
+                    # Align image top-left within the cell (adjust y coordinate)
+                    x = margin + (col * cell_width) # x is already left-aligned
+                    y = page_height - margin - (row * cell_height) - img_height # Align to top
                     
+                    # Draw border rectangle
+                    border_x = margin + (col * cell_width)
+                    border_y = page_height - margin - ((row + 1) * cell_height)
+                    c.setLineWidth(0.5) # Thin line
+                    c.setStrokeColorRGB(0, 0, 0) # Black
+                    c.rect(border_x, border_y, cell_width, cell_height, stroke=1, fill=0)
+
                     # Draw image
                     c.drawImage(frame.image_path, x, y, width=img_width, height=img_height)
             
             c.save()
-            print(f"PDF exported to: {file_path}")
+            if not is_temp_file:
+                print(f"PDF exported to: {file_path}")
+                messagebox.showinfo("Export Successful", f"PDF exported successfully to: {file_path}")
+            return file_path
         except Exception as e:
             print(f"Error exporting PDF: {str(e)}")
+            messagebox.showerror("Export Error", f"An error occurred while exporting the PDF: {str(e)}")
+            return None
 
-    def show_preview(self):
+    def preview_pdf(self):
         if not self.image_frames:
             messagebox.showwarning("No Images", "There are no images to preview.")
             return
 
-        # Create preview window
-        preview = tk.Toplevel(self.root)
-        preview.title("PDF Preview")
-        
-        # Calculate preview size (scale down letter size to fit screen)
-        scale_factor = 0.8  # 80% of letter size
-        page_width, page_height = letter
-        preview_width = int(page_width * scale_factor)
-        preview_height = int(page_height * scale_factor)
-        
-        # Create a canvas for each page
-        preview_frame = ttk.Frame(preview)
-        preview_frame.pack(expand=True, fill='both')
-        
-        # Add scrollbar if multiple pages
-        canvas_container = ttk.Frame(preview_frame)
-        canvas_container.pack(side='left', fill='both', expand=True)
-        
-        preview_canvas = tk.Canvas(canvas_container, width=preview_width, height=preview_height)
-        scrollbar = ttk.Scrollbar(preview_frame, orient='vertical', command=preview_canvas.yview)
-        
-        if self.page_var.get() > 1:
-            scrollbar.pack(side='right', fill='y')
-            preview_canvas.configure(yscrollcommand=scrollbar.set)
-        
-        preview_canvas.pack(side='left', fill='both', expand=True)
-        
-        # Frame to hold all pages
-        pages_frame = ttk.Frame(preview_canvas)
-        preview_canvas.create_window((0, 0), window=pages_frame, anchor='nw')
-        
-        # Calculate layout parameters
-        margin = 36 * scale_factor  # 0.5 inch margins scaled
-        usable_width = preview_width - 2 * margin
-        usable_height = preview_height - 2 * margin
-        
-        total_pages = self.page_var.get()
-        images_per_page = ceil(len(self.image_frames) / total_pages)
-        
-        if self.column_var.get() == "Auto":
-            num_columns = self.calculate_optimal_columns(len(self.image_frames), total_pages)
-        else:
-            num_columns = int(self.column_var.get())
-        
-        # Create preview for each page
-        for page in range(total_pages):
-            page_frame = ttk.Frame(pages_frame)
-            page_frame.pack(pady=10)
-            
-            # White background to simulate paper
-            page_bg = tk.Canvas(page_frame, width=preview_width, height=preview_height, bg='white')
-            page_bg.pack()
-            
-            start_idx = page * images_per_page
-            end_idx = min(start_idx + images_per_page, len(self.image_frames))
-            page_frames = self.image_frames[start_idx:end_idx]
-            
-            num_rows = (len(page_frames) + num_columns - 1) // num_columns
-            cell_width = usable_width / num_columns
-            cell_height = usable_height / num_rows
-            
-            for i, frame in enumerate(page_frames):
-                row = i // num_columns
-                col = i % num_columns
-                
-                # Calculate image position
-                x = margin + (col * cell_width)
-                y = margin + (row * cell_height)
-                
-                # Calculate image size while maintaining aspect ratio
-                img_width, img_height = frame.original_image.size
-                aspect_ratio = img_width / img_height
-                
-                if cell_width / cell_height > aspect_ratio:
-                    img_height = cell_height
-                    img_width = cell_height * aspect_ratio
-                else:
-                    img_width = cell_width
-                    img_height = cell_width / aspect_ratio
-                
-                # Center image in cell
-                x += (cell_width - img_width) / 2
-                y += (cell_height - img_height) / 2
-                
-                # Create preview image
-                preview_image = frame.original_image.copy()
-                preview_image.thumbnail((int(img_width), int(img_height)))
-                photo = ImageTk.PhotoImage(preview_image)
-                
-                # Store reference to avoid garbage collection
-                page_bg.images = getattr(page_bg, 'images', []) + [photo]
-                
-                page_bg.create_image(x, y, image=photo, anchor='nw')
-        
-        # Add buttons at the bottom
-        button_frame = ttk.Frame(preview)
-        button_frame.pack(pady=10)
-        
-        ttk.Button(button_frame, text="Export PDF", command=lambda: [preview.destroy(), self.export_pdf()]).pack(side='left', padx=5)
-        ttk.Button(button_frame, text="Cancel", command=preview.destroy).pack(side='left', padx=5)
-        
-        # Update scroll region
-        pages_frame.update_idletasks()
-        preview_canvas.configure(scrollregion=preview_canvas.bbox('all'))
-        
-        # Center the window on screen
-        preview.update_idletasks()
-        screen_width = preview.winfo_screenwidth()
-        screen_height = preview.winfo_screenheight()
-        x = (screen_width - preview.winfo_width()) // 2
-        y = (screen_height - preview.winfo_height()) // 2
-        preview.geometry(f"+{x}+{y}")
+        # Create a temporary file
+        try:
+            temp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+            temp_pdf_path = temp_pdf.name
+            temp_pdf.close() # Close the file handle immediately
+
+            # Export to the temporary file path
+            exported_path = self.export_pdf(file_path=temp_pdf_path)
+
+            if exported_path:
+                # Open the temporary PDF file using the default system viewer
+                try:
+                    current_platform = platform.system()
+                    if current_platform == "Windows":
+                        os.startfile(exported_path)
+                    elif current_platform == "Darwin": # macOS
+                        subprocess.run(["open", exported_path], check=True)
+                    else: # Linux and other Unix-like systems
+                        subprocess.run(["xdg-open", exported_path], check=True)
+                except FileNotFoundError:
+                    messagebox.showerror("Preview Error", f"Could not find a PDF viewer. Please open the file manually: {exported_path}")
+                except Exception as e:
+                    messagebox.showerror("Preview Error", f"Could not open PDF viewer: {str(e)} Please open the file manually: {exported_path}")
+            else:
+                # Export failed, try to clean up temp file
+                if os.path.exists(temp_pdf_path):
+                    os.unlink(temp_pdf_path)
+
+        except Exception as e:
+            messagebox.showerror("Preview Error", f"Could not create temporary file for preview: {str(e)}")
 
 if __name__ == "__main__":
     root = tk.Tk()
