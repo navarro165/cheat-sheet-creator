@@ -42,4 +42,7 @@ Thumbs.db
 
 # Project specific
 reference_images/
-*.pdf 
+*.pdf
+idea.txt
+reference_images/*
+!reference_images/.gitkeep 

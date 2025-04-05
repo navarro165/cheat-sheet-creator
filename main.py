@@ -10,6 +10,8 @@ from math import ceil, sqrt
 import tempfile
 import subprocess
 import platform
+import threading
+import time
 
 class ImageFrame(ttk.Frame):
     def __init__(self, parent, image_path, app):
@@ -70,6 +72,11 @@ class CheatSheetCreator:
         self.root = root
         self.root.title("Cheat Sheet Creator")
         
+        # Set timeout for debugging
+        self.timeout_thread = threading.Thread(target=self._timeout_check)
+        self.timeout_thread.daemon = True
+        self.timeout_thread.start()
+        
         # Set window size to match letter size (8.5x11 inches) plus some padding for controls
         # Convert inches to pixels (assuming 96 DPI)
         self.page_width = int(8.5 * 96)
@@ -88,7 +95,7 @@ class CheatSheetCreator:
         
         # Column control
         ttk.Label(controls_frame, text="Columns:").pack(side=tk.LEFT, padx=5)
-        self.column_var = tk.StringVar(value="Auto")
+        self.column_var = tk.StringVar(value="3")  # Default to 3 columns
         self.column_var.trace_add("write", lambda *args: self.update_layout())
         column_combo = ttk.Combobox(controls_frame, 
                                   values=["Auto", "1", "2", "3", "4"],
@@ -99,7 +106,7 @@ class CheatSheetCreator:
         
         # Page control
         ttk.Label(controls_frame, text="Pages:").pack(side=tk.LEFT, padx=5)
-        self.page_var = tk.IntVar(value=1)
+        self.page_var = tk.IntVar(value=2)  # Default to 2 pages
         self.page_var.trace_add("write", lambda *args: self.update_layout())
         page_spin = ttk.Spinbox(controls_frame, from_=1, to=10, 
                               width=5, textvariable=self.page_var)
@@ -121,7 +128,7 @@ class CheatSheetCreator:
 
         # Margin control
         ttk.Label(controls_frame, text="Margin (pts):", ).pack(side=tk.LEFT, padx=(15, 5))
-        self.margin_var = tk.IntVar(value=36) # Default 0.5 inch = 36 pts
+        self.margin_var = tk.IntVar(value=10)  # Default to 10 points margin
         margin_spin = ttk.Spinbox(controls_frame, from_=0, to=144, 
                                 width=5, textvariable=self.margin_var)
         margin_spin.pack(side=tk.LEFT, padx=5)
@@ -232,14 +239,16 @@ class CheatSheetCreator:
         images_per_page = ceil(len(self.image_frames) / total_pages)
         current_page = min(self.current_page.get(), total_pages)
         
-        print(f"Images per page: {images_per_page}")
-        
         # Get images for current page
         start_idx = (current_page - 1) * images_per_page
         end_idx = min(start_idx + images_per_page, len(self.image_frames))
         current_frames = self.image_frames[start_idx:end_idx]
         
-        print(f"Showing images {start_idx + 1} to {end_idx}")
+        print(f"\nDebug - Grid Order:")
+        # Print the filenames in the order they're stored in the list
+        for i, frame in enumerate(current_frames):
+            filename = os.path.basename(frame.image_path)
+            print(f"  Position {i+1}: {filename}")
         
         # Calculate number of columns
         if self.column_var.get() == "Auto":
@@ -271,7 +280,7 @@ class CheatSheetCreator:
         for i, frame in enumerate(current_frames):
             row = i // num_columns
             col = i % num_columns
-            print(f"Placing image {i + 1} at row {row}, col {col}")
+            print(f"  Placing {os.path.basename(frame.image_path)} at row {row}, col {col} (grid position {row*num_columns+col+1})")
             # Use minimal padding in auto mode
             padx = 1 if self.column_var.get() == "Auto" else 2
             pady = 1 if self.column_var.get() == "Auto" else 2
@@ -298,35 +307,71 @@ class CheatSheetCreator:
             self.current_page.set(self.current_page.get() + 1)
             self.update_layout()
         
+    def _timeout_check(self):
+        """Force exit after 30 seconds for debugging purposes"""
+        time.sleep(30)
+        print("\nTimeout reached - forcing exit for debugging")
+        os._exit(1)
+
     def load_images(self):
-        # Clear existing images
-        for widget in self.image_frame.winfo_children():
-            widget.destroy()
-        self.image_frames.clear()
-            
-        # Load images from reference_images directory
-        image_dir = "reference_images"
-        if not os.path.exists(image_dir):
-            os.makedirs(image_dir)
-            print(f"Created directory: {image_dir}")
-            
-        images = []
-        for filename in os.listdir(image_dir):
-            if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                path = os.path.join(image_dir, filename)
-                creation_time = os.path.getctime(path)
-                images.append((path, creation_time))
-                print(f"Found image: {filename}")
+        """Load images from the reference_images directory"""
+        self.images = []
+        self.reference_images_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference_images")
         
-        if not images:
-            print("No images found in the reference_images directory")
+        if not os.path.exists(self.reference_images_dir):
+            os.makedirs(self.reference_images_dir)
             return
-            
-        # Sort by creation time
-        images.sort(key=lambda x: x[1])
         
-        # Create image frames
-        for path, _ in images:
+        for filename in os.listdir(self.reference_images_dir):
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                path = os.path.join(self.reference_images_dir, filename)
+                try:
+                    # Parse timestamp from filename format: "Screenshot YYYY-MM-DD at H.MM.SS [AM/PM].png"
+                    print(f"\nParsing filename: {filename}")
+                    parts = filename.split()
+                    if len(parts) >= 5 and parts[0] == "Screenshot":
+                        date_str = parts[1]  # YYYY-MM-DD
+                        time_str = parts[3]  # H.MM.SS
+                        ampm = parts[4].split('.')[0]  # AM/PM
+                        
+                        # Parse date
+                        year, month, day = map(int, date_str.split('-'))
+                        
+                        # Parse time
+                        hour, minute, second = map(int, time_str.split('.'))
+                        
+                        # Convert to 24-hour format
+                        if ampm.upper() == "PM" and hour < 12:
+                            hour += 12
+                        elif ampm.upper() == "AM" and hour == 12:
+                            hour = 0
+                        
+                        # Create datetime object
+                        timestamp = datetime(year, month, day, hour, minute, second)
+                        print(f"Successfully parsed timestamp: {timestamp}")
+                    else:
+                        # Fallback to file creation time if parsing fails
+                        timestamp = datetime.fromtimestamp(os.path.getctime(path))
+                        print(f"Using file creation time instead: {timestamp}")
+                    
+                    self.images.append((path, timestamp))
+                except Exception as e:
+                    print(f"Error parsing timestamp from {filename}: {str(e)}")
+                    # Fallback to file creation time
+                    timestamp = datetime.fromtimestamp(os.path.getctime(path))
+                    print(f"Using file creation time instead: {timestamp}")
+                    self.images.append((path, timestamp))
+        
+        # Sort images by timestamp (oldest first)
+        self.images.sort(key=lambda x: x[1])  # Show oldest first
+        
+        # Print sorted order for debugging
+        print("\nImages sorted by timestamp (oldest first):")
+        for i, (path, timestamp) in enumerate(self.images, 1):
+            print(f"{i}. {os.path.basename(path)} - {timestamp}")
+        
+        # Create image frames in the sorted order
+        for path, _ in self.images:
             frame = ImageFrame(self.image_frame, path, self)
             self.image_frames.append(frame)
             
@@ -367,6 +412,14 @@ class CheatSheetCreator:
                 return None
 
             total_pages = self.page_var.get()
+            
+            # Debug: Print the order of all images before PDF generation
+            print("\nPDF Debug - All images in order:")
+            for i, frame in enumerate(self.image_frames):
+                print(f"  {i+1}. {os.path.basename(frame.image_path)}")
+            
+            # For multi-page PDFs, use a sequential approach to assign images to pages
+            # Calculate images per page
             images_per_page = ceil(len(self.image_frames) / total_pages)
             
             # Calculate number of columns
@@ -374,27 +427,44 @@ class CheatSheetCreator:
                 num_columns = self.calculate_optimal_columns(len(self.image_frames), total_pages)
             else:
                 num_columns = int(self.column_var.get())
+                
+            print(f"\nPDF Layout: {total_pages} pages, {num_columns} columns, {images_per_page} images per page")
             
+            # Process each page
             for page in range(total_pages):
                 if page > 0:
                     c.showPage()
-                    
+                
+                # Get images for this page (sequential slicing)
                 start_idx = page * images_per_page
                 end_idx = min(start_idx + images_per_page, len(self.image_frames))
                 page_frames = self.image_frames[start_idx:end_idx]
                 
-                num_rows = (len(page_frames) + num_columns - 1) // num_columns
+                print(f"\nPDF Page {page+1} - Images:")
+                for i, frame in enumerate(page_frames):
+                    print(f"  {start_idx+i+1}. {os.path.basename(frame.image_path)}")
                 
+                # Calculate number of rows needed for this page
+                num_rows = ceil(len(page_frames) / num_columns)
+                
+                # Calculate cell dimensions
                 cell_width = usable_width / num_columns
                 cell_height = usable_height / num_rows
                 
+                # Place images in grid (left-to-right, top-to-bottom)
                 for i, frame in enumerate(page_frames):
+                    # Calculate grid position
                     row = i // num_columns
                     col = i % num_columns
                     
-                    # Calculate image position
-                    x = margin + (col * cell_width)
-                    y = page_height - margin - ((row + 1) * cell_height)
+                    print(f"  Placing {os.path.basename(frame.image_path)} at row {row}, col {col}")
+                    
+                    # Draw border rectangle
+                    border_x = margin + (col * cell_width)
+                    border_y = page_height - margin - ((row + 1) * cell_height)
+                    c.setLineWidth(0.5) # Thin line
+                    c.setStrokeColorRGB(0, 0, 0) # Black
+                    c.rect(border_x, border_y, cell_width, cell_height, stroke=1, fill=0)
                     
                     # Calculate image size while maintaining aspect ratio
                     img_width, img_height = frame.original_image.size
@@ -407,19 +477,19 @@ class CheatSheetCreator:
                         img_width = cell_width
                         img_height = cell_width / aspect_ratio
                     
-                    # Align image top-left within the cell (adjust y coordinate)
-                    x = margin + (col * cell_width) # x is already left-aligned
-                    y = page_height - margin - (row * cell_height) - img_height # Align to top
+                    # Align image top-left within the cell
+                    x = margin + (col * cell_width)
+                    y = page_height - margin - (row * cell_height) - img_height
                     
-                    # Draw border rectangle
-                    border_x = margin + (col * cell_width)
-                    border_y = page_height - margin - ((row + 1) * cell_height)
-                    c.setLineWidth(0.5) # Thin line
-                    c.setStrokeColorRGB(0, 0, 0) # Black
-                    c.rect(border_x, border_y, cell_width, cell_height, stroke=1, fill=0)
-
                     # Draw image
                     c.drawImage(frame.image_path, x, y, width=img_width, height=img_height)
+                    
+                    # Draw filename for debugging (small text at bottom of cell)
+                    if not is_temp_file:  # Only in final export
+                        c.setFont("Helvetica", 6)
+                        filename = os.path.basename(frame.image_path)
+                        short_name = filename[:20] + "..." if len(filename) > 20 else filename
+                        c.drawString(border_x + 2, border_y + 2, short_name)
             
             c.save()
             if not is_temp_file:
