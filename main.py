@@ -12,6 +12,7 @@ import subprocess
 import platform
 import threading
 import time
+import argparse
 
 class ImageFrame(ttk.Frame):
     def __init__(self, parent, image_path, app):
@@ -68,14 +69,20 @@ class ImageFrame(ttk.Frame):
         self.image_label.configure(image=self.photo)
 
 class CheatSheetCreator:
-    def __init__(self, root):
+    def __init__(self, root, debug=False):
         self.root = root
         self.root.title("Cheat Sheet Creator")
         
-        # Set timeout for debugging
-        self.timeout_thread = threading.Thread(target=self._timeout_check)
-        self.timeout_thread.daemon = True
-        self.timeout_thread.start()
+        # Set default values
+        self.column_var = tk.StringVar(value="3")
+        self.page_var = tk.IntVar(value=2)
+        self.margin_var = tk.IntVar(value=10)
+        
+        # Set timeout for debugging only if debug flag is set
+        if debug:
+            self.timeout_thread = threading.Thread(target=self._timeout_check)
+            self.timeout_thread.daemon = True
+            self.timeout_thread.start()
         
         # Set window size to match letter size (8.5x11 inches) plus some padding for controls
         # Convert inches to pixels (assuming 96 DPI)
@@ -93,9 +100,35 @@ class CheatSheetCreator:
         controls_frame = ttk.Frame(main_frame)
         controls_frame.pack(fill=tk.X, pady=(0, 10))
         
+        # Directory selection
+        dir_frame = ttk.Frame(controls_frame)
+        dir_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(dir_frame, text="Image Directory:").pack(side=tk.LEFT, padx=5)
+        
+        # Create a StringVar to hold the current directory
+        self.dir_var = tk.StringVar()
+        
+        # Check if reference_images exists
+        if os.path.exists("reference_images"):
+            self.dir_var.set("reference_images")
+            self.reference_dir = "reference_images"
+        else:
+            self.dir_var.set("Select Directory")
+            self.reference_dir = None
+        
+        # Create directory selection button
+        dir_button = ttk.Button(dir_frame, text="Browse...", 
+                              command=self.select_directory)
+        dir_button.pack(side=tk.RIGHT, padx=5)
+        
+        # Create label to show current directory
+        self.dir_label = ttk.Label(dir_frame, textvariable=self.dir_var, 
+                                 foreground="red" if not self.reference_dir else "black")
+        self.dir_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        
         # Column control
         ttk.Label(controls_frame, text="Columns:").pack(side=tk.LEFT, padx=5)
-        self.column_var = tk.StringVar(value="3")  # Default to 3 columns
         self.column_var.trace_add("write", lambda *args: self.update_layout())
         column_combo = ttk.Combobox(controls_frame, 
                                   values=["Auto", "1", "2", "3", "4"],
@@ -106,7 +139,6 @@ class CheatSheetCreator:
         
         # Page control
         ttk.Label(controls_frame, text="Pages:").pack(side=tk.LEFT, padx=5)
-        self.page_var = tk.IntVar(value=2)  # Default to 2 pages
         self.page_var.trace_add("write", lambda *args: self.update_layout())
         page_spin = ttk.Spinbox(controls_frame, from_=1, to=10, 
                               width=5, textvariable=self.page_var)
@@ -128,7 +160,6 @@ class CheatSheetCreator:
 
         # Margin control
         ttk.Label(controls_frame, text="Margin (pts):", ).pack(side=tk.LEFT, padx=(15, 5))
-        self.margin_var = tk.IntVar(value=10)  # Default to 10 points margin
         margin_spin = ttk.Spinbox(controls_frame, from_=0, to=144, 
                                 width=5, textvariable=self.margin_var)
         margin_spin.pack(side=tk.LEFT, padx=5)
@@ -313,18 +344,33 @@ class CheatSheetCreator:
         print("\nTimeout reached - forcing exit for debugging")
         os._exit(1)
 
+    def select_directory(self):
+        """Open directory selection dialog and update the directory"""
+        selected_dir = filedialog.askdirectory(
+            title="Select Directory for Images",
+            initialdir=os.path.expanduser("~")
+        )
+        if selected_dir:  # If user selected a directory
+            self.reference_dir = selected_dir
+            self.dir_var.set(os.path.basename(selected_dir))
+            self.dir_label.configure(foreground="black")
+            self.load_images()  # Reload images from new directory
+            
     def load_images(self):
-        """Load images from the reference_images directory"""
+        """Load images from the selected directory"""
         self.images = []
-        self.reference_images_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference_images")
         
-        if not os.path.exists(self.reference_images_dir):
-            os.makedirs(self.reference_images_dir)
+        if not self.reference_dir:
+            print("No directory selected")
+            return
+            
+        if not os.path.exists(self.reference_dir):
+            print(f"Directory does not exist: {self.reference_dir}")
             return
         
-        for filename in os.listdir(self.reference_images_dir):
+        for filename in os.listdir(self.reference_dir):
             if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                path = os.path.join(self.reference_images_dir, filename)
+                path = os.path.join(self.reference_dir, filename)
                 try:
                     # Parse timestamp from filename format: "Screenshot YYYY-MM-DD at H.MM.SS [AM/PM].png"
                     print(f"\nParsing filename: {filename}")
@@ -538,6 +584,11 @@ class CheatSheetCreator:
             messagebox.showerror("Preview Error", f"Could not create temporary file for preview: {str(e)}")
 
 if __name__ == "__main__":
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Cheat Sheet Creator')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode with timeout')
+    args = parser.parse_args()
+    
     root = tk.Tk()
-    app = CheatSheetCreator(root)
+    app = CheatSheetCreator(root, debug=args.debug)
     root.mainloop() 

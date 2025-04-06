@@ -5,6 +5,7 @@ A Python application that helps create cheat sheets by arranging multiple images
 ## Features
 
 - Drag and drop images into the reference_images folder
+- Select custom directory for images
 - Automatically arranges images in a grid layout
 - Adjustable number of columns (Auto, 1-4)
 - Multiple page support
@@ -46,15 +47,22 @@ pip install pillow reportlab
 python main.py
 ```
 
-2. Place your images in the `reference_images` directory
+2. Place your images in the `reference_images` directory or select a custom directory using the "Browse..." button
 3. Adjust columns and pages as needed
 4. Click "Preview PDF" to see how the final PDF will look
 5. Export to PDF when satisfied with the layout
 
+### Debug Mode
+
+To run the application in debug mode (with a 30-second timeout for testing):
+```bash
+python main.py --debug
+```
+
 ## Directory Structure
 
 - `main.py`: Main application code
-- `reference_images/`: Directory for storing input images
+- `reference_images/`: Default directory for storing input images (optional)
 - `venv/`: Python virtual environment (created during installation)
 
 ## License
