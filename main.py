@@ -6,6 +6,7 @@ from PIL import Image, ImageTk
 from datetime import datetime
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
+from reportlab.lib.utils import ImageReader
 from math import ceil, sqrt
 import tempfile
 import subprocess
@@ -14,6 +15,8 @@ import threading
 import time
 import argparse
 import re
+import logging
+import webbrowser
 
 class ImageFrame:
     def __init__(self, image_path, timestamp):
@@ -27,6 +30,17 @@ class ImageFrame:
         self.delete_button = None
 
 class CheatSheetCreator:
+    # Constants
+    DEFAULT_COLUMNS = 3
+    DEFAULT_MAX_PAGES = 2
+    DEFAULT_MARGIN_PTS = 10
+    DEFAULT_PADDING_PTS = 10
+    DEFAULT_THUMBNAIL_ASPECT_RATIO = 0.75
+    DEFAULT_CANVAS_WIDTH = 800
+    PREVIEW_FILENAME = "preview.pdf"
+    FILENAME_FONT_SIZE = 6
+    FILENAME_MAX_LEN = 20
+
     def __init__(self, root):
         self.root = root
         self.root.title("Cheat Sheet Creator")
@@ -63,22 +77,22 @@ class CheatSheetCreator:
         
         # Margin setting
         ttk.Label(self.settings_frame, text="Margin (pts):").pack(side=tk.LEFT)
-        self.margin_var = tk.IntVar(value=10)
+        self.margin_var = tk.IntVar(value=self.DEFAULT_MARGIN_PTS)
         self.margin_entry = ttk.Entry(self.settings_frame, width=5, textvariable=self.margin_var)
         self.margin_entry.pack(side=tk.LEFT, padx=5)
         
         # Column setting
         ttk.Label(self.settings_frame, text="Columns:").pack(side=tk.LEFT, padx=(20, 5))
-        self.column_var = tk.StringVar(value="3")
-        self.column_combo = ttk.Combobox(self.settings_frame, textvariable=self.column_var, 
-                                       values=["3"], state="readonly", width=5)
+        self.column_var = tk.IntVar(value=self.DEFAULT_COLUMNS)
+        self.column_combo = ttk.Combobox(self.settings_frame, textvariable=self.column_var,
+                                       values=[str(i) for i in range(1, 7)], width=5)
         self.column_combo.pack(side=tk.LEFT)
         
         # Page setting
         ttk.Label(self.settings_frame, text="Max Pages:").pack(side=tk.LEFT, padx=(20, 5))
-        self.page_var = tk.StringVar(value="2")
-        self.page_combo = ttk.Combobox(self.settings_frame, textvariable=self.page_var, 
-                                     values=["2"], state="readonly", width=5)
+        self.page_var = tk.IntVar(value=self.DEFAULT_MAX_PAGES)
+        self.page_combo = ttk.Combobox(self.settings_frame, textvariable=self.page_var,
+                                     values=[str(i) for i in range(1, 11)], width=5)
         self.page_combo.pack(side=tk.LEFT)
         
         # Buttons
@@ -116,6 +130,64 @@ class CheatSheetCreator:
         if os.path.exists(self.images_dir):
             self.load_images()
     
+    def _parse_timestamp(self, image_path):
+        """Parses timestamp from filename or uses fallbacks."""
+        filename = os.path.basename(image_path)
+        logging.debug(f"\nParsing timestamp for: {filename}")
+        timestamp = None
+        try:
+            # Try to extract timestamp from filename (macOS format)
+            # Example: Screenshot 2025-04-05 at 9.25.49 PM.png
+            match = re.search(r'(\d{4}-\d{2}-\d{2}) at (\d{1,2}\.\d{2}\.\d{2})\s*(AM|PM)?', filename, re.IGNORECASE)
+            if match:
+                date_str, time_str, period = match.groups()
+                # Handle potential missing period (common in some locales/versions)
+                if period is None:
+                    try:
+                        # Try parsing as 24-hour first
+                        dt_obj = datetime.strptime(f"{date_str} {time_str.replace('.', ':')}", "%Y-%m-%d %H:%M:%S")
+                        timestamp = dt_obj
+                        logging.debug(f"Parsed as 24-hour format: {timestamp}")
+                    except ValueError:
+                        # Fallback or make an assumption - here we'll assume PM for hours > 12 if period is missing
+                        hours, minutes, seconds = map(int, time_str.split('.'))
+                        if hours > 12: period = 'PM'
+                        else: period = 'AM'
+
+                if timestamp is None: # If not parsed as 24h or if period was present
+                    hours, minutes, seconds = map(int, time_str.split('.'))
+                    if period and period.upper() == 'PM' and hours != 12:
+                        hours += 12
+                    elif period and period.upper() == 'AM' and hours == 12:
+                        hours = 0 # Midnight case
+                    timestamp = datetime.strptime(f"{date_str} {hours:02d}:{minutes:02d}:{seconds:02d}",
+                                                "%Y-%m-%d %H:%M:%S")
+                    logging.debug(f"Successfully parsed timestamp from filename: {timestamp}")
+
+        except Exception as e:
+            logging.warning(f"Could not parse timestamp from filename '{filename}': {str(e)}")
+
+        # Fallback 1: Use file modification time
+        if timestamp is None:
+            try:
+                mtime = os.path.getmtime(image_path)
+                timestamp = datetime.fromtimestamp(mtime)
+                logging.debug(f"Using file modification time: {timestamp}")
+            except Exception as e:
+                logging.error(f"Error getting file modification time for {filename}: {str(e)}")
+
+        # Fallback 2: Use current time as the last resort
+        if timestamp is None:
+            timestamp = datetime.now()
+            logging.warning(f"Using current time as fallback for {filename}: {timestamp}")
+
+        # Ensure timestamp is always a datetime object before returning
+        if not isinstance(timestamp, datetime):
+             logging.error(f"Timestamp assignment failed unexpectedly for {filename}, using current time.")
+             timestamp = datetime.now() # Final safety net
+
+        return timestamp
+
     def browse_directory(self):
         directory = filedialog.askdirectory(initialdir=self.current_directory)
         if directory:
@@ -148,69 +220,19 @@ class CheatSheetCreator:
             return
         
         # First, create all image frames
+        temp_frames = [] # Create temp list first
         for image_path in image_files:
-            filename = os.path.basename(image_path)
-            print(f"\nParsing filename: {filename}")
-            
-            timestamp = None
             try:
-                # Try to extract timestamp from filename (macOS format)
-                # Example: Screenshot 2025-04-05 at 9.25.49 PM.png
-                match = re.search(r'(\d{4}-\d{2}-\d{2}) at (\d{1,2}\.\d{2}\.\d{2})\s*(AM|PM)?', filename, re.IGNORECASE)
-                if match:
-                    date_str, time_str, period = match.groups()
-                     # Handle potential missing period (common in some locales/versions)
-                    if period is None:
-                        # Attempt to determine AM/PM based on hour, assuming 24h format if ambiguous
-                         try:
-                            # Try parsing as 24-hour first
-                             dt_obj = datetime.strptime(f"{date_str} {time_str.replace('.', ':')}", "%Y-%m-%d %H:%M:%S")
-                             timestamp = dt_obj
-                             print(f"Parsed as 24-hour format: {timestamp}")
-                         except ValueError:
-                             # Fallback or make an assumption - here we'll assume PM for hours > 12 if period is missing
-                             # This part might need refinement based on actual filename patterns
-                             hours, minutes, seconds = map(int, time_str.split('.'))
-                             if hours > 12: # Basic assumption
-                                 period = 'PM'
-                             else:
-                                 period = 'AM' # Default assumption
-
-                    if timestamp is None: # If not parsed as 24h or if period was present
-                        hours, minutes, seconds = map(int, time_str.split('.'))
-                        if period and period.upper() == 'PM' and hours != 12:
-                            hours += 12
-                        elif period and period.upper() == 'AM' and hours == 12:
-                            hours = 0 # Midnight case
-                        timestamp = datetime.strptime(f"{date_str} {hours:02d}:{minutes:02d}:{seconds:02d}",
-                                                    "%Y-%m-%d %H:%M:%S")
-                        print(f"Successfully parsed timestamp from filename: {timestamp}")
-
+                timestamp = self._parse_timestamp(image_path)
+                frame = ImageFrame(image_path, timestamp)
+                temp_frames.append(frame)
+            except FileNotFoundError:
+                 logging.error(f"Image file not found during ImageFrame creation: {image_path}")
             except Exception as e:
-                print(f"Could not parse timestamp from filename '{filename}': {str(e)}")
+                 logging.exception(f"Error creating ImageFrame for {image_path}: {e}")
 
-            # Fallback 1: Use file modification time
-            if timestamp is None:
-                try:
-                    mtime = os.path.getmtime(image_path)
-                    timestamp = datetime.fromtimestamp(mtime)
-                    print(f"Using file modification time: {timestamp}")
-                except Exception as e:
-                    print(f"Error getting file modification time: {str(e)}")
-
-            # Fallback 2: Use current time as the last resort
-            if timestamp is None:
-                timestamp = datetime.now()
-                print(f"Using current time as fallback: {timestamp}")
-            
-            # Ensure timestamp is always a datetime object before creating ImageFrame
-            if not isinstance(timestamp, datetime):
-                 print(f"Timestamp assignment failed for {filename}, using current time.")
-                 timestamp = datetime.now() # Final safety net
-
-            self.image_frames.append(ImageFrame(image_path, timestamp))
-        
-        # Now sort all frames by timestamp
+        # Assign to instance variable and sort
+        self.image_frames = temp_frames
         self.image_frames.sort(key=lambda x: x.timestamp)
         
         # Update layout
@@ -218,7 +240,7 @@ class CheatSheetCreator:
     
     def update_layout(self):
         if not self.image_frames:
-            print("No images to layout")
+            logging.info("No images to layout")
             return
         
         # Clear existing frames
@@ -227,16 +249,16 @@ class CheatSheetCreator:
                 frame.frame.destroy()
         
         # Calculate grid dimensions
-        num_columns = 3  # Fixed at 3 columns
+        num_columns = self.column_var.get()
         num_rows = (len(self.image_frames) + num_columns - 1) // num_columns
         
         # Calculate thumbnail size
         canvas_width = self.canvas.winfo_width()
         if canvas_width <= 1:  # If canvas hasn't been drawn yet
-            canvas_width = 800  # Default width
+            canvas_width = self.DEFAULT_CANVAS_WIDTH  # Use constant
         
         thumbnail_width = (canvas_width - 20) // num_columns  # 20 for padding
-        thumbnail_height = int(thumbnail_width * 0.75)  # 4:3 aspect ratio
+        thumbnail_height = int(thumbnail_width * self.DEFAULT_THUMBNAIL_ASPECT_RATIO) # Use constant
         
         # Create image grid
         for i, frame in enumerate(self.image_frames):
@@ -279,22 +301,28 @@ class CheatSheetCreator:
     
     def preview_pdf(self):
         # Create temporary PDF file
-        temp_file = "preview.pdf"
+        temp_file = self.PREVIEW_FILENAME # Use constant
         if os.path.exists(temp_file):
-            os.remove(temp_file)
+            try:
+                os.remove(temp_file)
+            except OSError as e:
+                 logging.error(f"Error removing existing preview file {temp_file}: {e}")
+                 messagebox.showerror("Preview Error", f"Could not remove existing preview file: {temp_file}\n{e}")
+                 return
         
         # Export to temporary file
         pdf_path = self.export_pdf(temp_file)
         if pdf_path:
-            # Open PDF viewer
-            if os.name == 'nt':  # Windows
-                os.startfile(pdf_path)
-            else:  # macOS and Linux
-                os.system(f'open "{pdf_path}"')
+             try:
+                 # Open PDF viewer using webbrowser
+                 webbrowser.open(f"file://{os.path.abspath(pdf_path)}") # Use webbrowser and absolute path
+             except Exception as e:
+                 logging.error(f"Error opening preview PDF {pdf_path}: {e}")
+                 messagebox.showerror("Preview Error", f"Could not open preview PDF: {pdf_path}\n{e}")
     
     def export_pdf(self, file_path=None):
         if not self.image_frames:
-            print("No images to export")
+            logging.warning("No images to export")
             messagebox.showwarning("No Images", "There are no images to export.")
             return None
 
@@ -313,17 +341,18 @@ class CheatSheetCreator:
             c = canvas.Canvas(file_path, pagesize=letter)
             page_width, page_height = letter
             
-            # Use fixed settings
-            margin = 10  # Fixed 10pt margin
-            num_columns = 3  # Fixed 3 columns
-            max_pages = 2  # Fixed 2 pages
+            # Get settings from GUI
+            margin = self.margin_var.get()
+            num_columns = self.column_var.get()
+            max_pages = self.page_var.get()
+            padding = self.DEFAULT_PADDING_PTS # Use constant for padding
             
             usable_width = page_width - 2 * margin
             usable_height = page_height - 2 * margin
             
-            print(f"\nPage dimensions:")
-            print(f"  Total width: {page_width}pt, height: {page_height}pt")
-            print(f"  Usable width: {usable_width}pt, height: {usable_height}pt")
+            logging.info("\nPage dimensions:")
+            logging.info(f"  Total width: {page_width}pt, height: {page_height}pt")
+            logging.info(f"  Usable width: {usable_width}pt, height: {usable_height}pt")
             
             if usable_width <= 0 or usable_height <= 0:
                 messagebox.showerror("Export Error", f"Margins ({margin} pts) are too large for the page size.")
@@ -333,12 +362,11 @@ class CheatSheetCreator:
 
             # Calculate cell width (fixed for all columns)
             cell_width = usable_width / num_columns
-            padding = 10  # Padding between images
             
-            print(f"\nColumn layout:")
-            print(f"  Number of columns: {num_columns}")
-            print(f"  Cell width: {cell_width}pt")
-            print(f"  Padding between images: {padding}pt")
+            logging.info(f"\nColumn layout:")
+            logging.info(f"  Number of columns: {num_columns}")
+            logging.info(f"  Cell width: {cell_width}pt")
+            logging.info(f"  Padding between images: {padding}pt")
             
             # Group images by column
             columns = [[] for _ in range(num_columns)]
@@ -346,9 +374,9 @@ class CheatSheetCreator:
                 col_idx = i % num_columns
                 columns[col_idx].append(frame)
             
-            print(f"\nImage distribution:")
+            logging.info(f"\nImage distribution:")
             for i, col in enumerate(columns):
-                print(f"  Column {i+1}: {len(col)} images")
+                logging.info(f"  Column {i+1}: {len(col)} images")
             
             # Process each page
             current_page = 0
@@ -356,54 +384,70 @@ class CheatSheetCreator:
                 if current_page > 0:
                     c.showPage()
                 
-                print(f"\nProcessing page {current_page + 1}")
+                logging.info(f"\nProcessing page {current_page + 1}")
                 
                 # Process each column
                 for col_idx, column in enumerate(columns):
                     # Start from top of page
                     y = page_height - margin
                     
-                    print(f"\n  Processing column {col_idx + 1}")
-                    print(f"    Starting y position: {y}pt")
+                    logging.info(f"\n  Processing column {col_idx + 1}")
+                    logging.info(f"    Starting y position: {y}pt")
                     
                     # Process images in column until we run out of space
                     while column and y > margin:
                         frame = column[0]
                         img_width, img_height = frame.original_image.size
                         aspect_ratio = img_height / img_width
-                        scaled_width = cell_width * 0.95  # Leave some padding
+                        scaled_width = cell_width * 0.90
                         scaled_height = scaled_width * aspect_ratio
                         
-                        # Check if image fits
+                        # Check if image fits (considering padding below image)
                         if y - scaled_height < margin:
+                            # If even the first image doesn't fit, break column processing
+                            if y == page_height - margin:
+                                logging.warning(f"      Image {os.path.basename(frame.image_path)} is too tall to fit on page {current_page + 1}, column {col_idx + 1}.")
                             break
                         
                         # Calculate x position (centered in column)
                         x = margin + (col_idx * cell_width) + (cell_width - scaled_width) / 2
                         
                         filename = os.path.basename(frame.image_path)
-                        print(f"\n    Placing {filename}:")
-                        print(f"      Original size: {img_width}x{img_height}")
-                        print(f"      Scaled size: {scaled_width:.2f}x{scaled_height:.2f}")
-                        print(f"      Position: x={x:.2f}, y={y:.2f}")
+                        logging.info(f"\n    Placing {filename}:")
+                        logging.info(f"      Original size: {img_width}x{img_height}")
+                        logging.info(f"      Scaled size: {scaled_width:.2f}x{scaled_height:.2f}")
+                        logging.info(f"      Position: x={x:.2f}, y={y:.2f}")
                         
                         # Draw border
                         c.setLineWidth(0.5)
                         c.setStrokeColorRGB(0, 0, 0)
                         c.rect(x, y - scaled_height, scaled_width, scaled_height, stroke=1, fill=0)
                         
-                        # Draw image
-                        c.drawImage(frame.image_path, x, y - scaled_height, width=scaled_width, height=scaled_height)
+                        # Draw image using ImageReader for performance
+                        try:
+                            img_reader = ImageReader(frame.original_image)
+                            c.drawImage(img_reader, x, y - scaled_height, width=scaled_width, height=scaled_height)
+                        except Exception as img_err:
+                             logging.error(f"      Error drawing image {filename}: {img_err}")
+                             # Optionally draw a placeholder or skip
+                             c.setFillColorRGB(0.8, 0.8, 0.8) # Gray fill
+                             c.rect(x, y - scaled_height, scaled_width, scaled_height, stroke=0, fill=1)
+                             c.setFillColorRGB(0, 0, 0) # Black text
+                             c.setFont("Helvetica", 8)
+                             c.drawCentredString(x + scaled_width / 2, y - scaled_height / 2, f"Error loading {filename}")
                         
                         # Draw filename if not preview
                         if not is_temp_file:
-                            c.setFont("Helvetica", 6)
-                            short_name = filename[:20] + "..." if len(filename) > 20 else filename
+                            c.setFont("Helvetica", self.FILENAME_FONT_SIZE)
+                            # Truncate filename if it's too long
+                            max_len = self.FILENAME_MAX_LEN
+                            short_name = (filename[:max_len] + '...') if len(filename) > max_len else filename
+                            # Draw filename at the bottom-left inside the border
                             c.drawString(x + 2, y - scaled_height + 2, short_name)
                         
                         # Update y position for next image
                         y -= (scaled_height + padding)
-                        print(f"      Next y position: {y:.2f}pt")
+                        logging.info(f"      Next y position: {y:.2f}pt")
                         
                         # Remove the placed image
                         column.pop(0)
@@ -412,18 +456,28 @@ class CheatSheetCreator:
             
             c.save()
             if not is_temp_file:
-                print(f"PDF exported to: {file_path}")
+                logging.info(f"PDF exported to: {file_path}")
                 messagebox.showinfo("Export Successful", f"PDF exported successfully to: {file_path}")
             return file_path
             
         except Exception as e:
-            print(f"Error exporting PDF: {str(e)}")
+            logging.exception(f"Error exporting PDF: {str(e)}") # Use logging.exception to include traceback
             messagebox.showerror("Export Error", f"An error occurred while exporting the PDF: {str(e)}")
+            # Clean up temporary file on error
+            if is_temp_file and os.path.exists(file_path):
+                try:
+                    os.unlink(file_path)
+                except OSError as unlink_err:
+                    logging.error(f"Error removing temporary PDF file {file_path} after export error: {unlink_err}")
             return None
 
+def setup_logging():
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 def main():
+    setup_logging() # Setup logging configuration
     parser = argparse.ArgumentParser(description='Cheat Sheet Creator')
-    parser.add_argument('--debug', action='store_true', help='Run in debug mode')
+    parser.add_argument('--debug', action='store_true', help='Run in debug mode (enables preview)')
     parser.add_argument('--images', type=str, help='Path to images directory')
     args = parser.parse_args()
     
@@ -431,13 +485,25 @@ def main():
     app = CheatSheetCreator(root)
     
     if args.debug:
-        print("Debug mode enabled - will run preview process automatically")
+        logging.info("Debug mode enabled - will run preview process automatically")
+        # Set logging level to DEBUG if debug flag is set
+        logging.getLogger().setLevel(logging.DEBUG)
         if args.images:
+            # Validate image path provided via args
+            if not os.path.isdir(args.images):
+                 logging.error(f"Invalid image directory specified via --images: {args.images}")
+                 messagebox.showerror("Startup Error", f"Invalid image directory specified:\n{args.images}")
+                 root.quit() # Exit if dir is bad
+                 return
             app.images_dir = args.images
             app.dir_entry.delete(0, tk.END)
             app.dir_entry.insert(0, args.images)
             app.load_images()
-            app.preview_pdf()
+            if app.image_frames: # Only preview if images were loaded
+                app.preview_pdf()
+        else:
+             logging.warning("Debug mode enabled, but no --images directory specified.")
+             messagebox.showwarning("Debug Mode", "Debug mode enabled, but no image directory specified via --images argument.")
     
     root.mainloop()
 

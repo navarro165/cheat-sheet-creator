@@ -1,70 +1,92 @@
 # Cheat Sheet Creator
 
-A Python application that helps create cheat sheets by arranging multiple images into a grid layout and exporting them to PDF format.
+A Python application that helps you create cheat sheets from screenshots by organizing them into a PDF with a clean, grid-based layout.
+
+![Example Cheat Sheet](example.png)
 
 ## Features
 
-- Drag and drop images into the reference_images folder
-- Select custom directory for images
-- Automatically arranges images in a grid layout
-- Adjustable number of columns (Auto, 1-4)
-- Multiple page support
-- Preview before export
-- Export to PDF with customizable layout
-- Delete individual images with hover button
-- Maintains aspect ratio of images
+- **Automatic Layout**: Organizes screenshots into a customizable grid layout (1-6 columns)
+- **Smart Sorting**: Sorts screenshots by timestamp in filename with multiple fallback methods
+- **PDF Export**: Creates a clean, well-formatted PDF with up to 10 pages
+- **Preview Mode**: See how your cheat sheet will look before exporting
+- **Customizable**: Adjust margins, number of columns, and maximum pages
+- **Command Line Support**: Run in debug mode or specify image directory
+- **Error Handling**: Robust timestamp parsing and image processing with fallbacks
 
 ## Requirements
 
 - Python 3.9+
-- tkinter (usually comes with Python)
-- Pillow (PIL)
-- reportlab
+- Required packages:
+  - Pillow (for image processing)
+  - reportlab (for PDF generation)
+  - (No additional dependencies for basic usage)
 
 ## Installation
 
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd cheat-sheet-creator
-```
-
+1. Clone this repository
 2. Create a virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
 3. Install dependencies:
-```bash
-pip install pillow reportlab
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 ## Usage
 
+### GUI Mode
 1. Run the application:
+   ```bash
+   python main.py
+   ```
+2. Use the interface to:
+   - Select an images directory
+   - Adjust layout settings (margins, columns, pages)
+   - Preview the layout
+   - Export to PDF
+
+### Command Line Mode
+Run with debug mode and specify an images directory:
 ```bash
-python main.py
+python main.py --debug --images /path/to/images
 ```
 
-2. Place your images in the `reference_images` directory or select a custom directory using the "Browse..." button
-3. Adjust columns and pages as needed
-4. Click "Preview PDF" to see how the final PDF will look
-5. Export to PDF when satisfied with the layout
+This will automatically:
+1. Load images from the specified directory
+2. Display them in the GUI
+3. Generate and open a preview PDF
 
-### Debug Mode
+## Layout Settings
 
-To run the application in debug mode (with a 30-second timeout for testing):
+- **Columns**: Adjustable from 1-6 columns (default: 3)
+- **Pages**: Set maximum pages from 1-10 (default: 2)
+- **Margins**: Adjust margins in points (default: 10pt)
+- **Image Spacing**: Fixed at 10pt padding between images
+
+## Image Requirements
+
+- Supported formats: PNG, JPG, JPEG
+- Filenames should include timestamps for proper sorting
+- Example format: `Screenshot 2025-04-05 at 9.25.49 PM.png`
+
+### Timestamp Parsing
+
+The application will attempt to parse timestamps in this order:
+1. From filename (macOS screenshot format)
+2. File modification time
+3. Current time (if all else fails)
+
+## Troubleshooting
+
+If you encounter a "No module named 'reportlab'" error despite having installed the requirements, make sure to run the script using the Python interpreter from your virtual environment:
+
 ```bash
-python main.py --debug
+./venv/bin/python main.py
 ```
-
-## Directory Structure
-
-- `main.py`: Main application code
-- `reference_images/`: Default directory for storing input images (optional)
-- `venv/`: Python virtual environment (created during installation)
 
 ## License
 
-MIT License 
+This project is licensed under the MIT License - see the LICENSE file for details. 
