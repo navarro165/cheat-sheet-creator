@@ -1,3 +1,15 @@
+# Motivation
+
+I created this tool because I needed a way to quickly create cheat sheets for my classes without spending time manually organizing or handwriting everything. Here's how I use it:
+
+1. While studying slides or course material, I take screenshots of important information
+2. These screenshots are automatically saved in chronological order in a folder
+3. I then use this program to automatically organize these screenshots into a cheat sheet
+4. The program preserves the chronological order of the screenshots
+5. I can customize the layout by choosing how many pages and columns I need
+
+This approach saves me a lot of time and effort while still creating effective study materials.
+
 # Cheat Sheet Creator
 
 A Python application that helps you create cheat sheets from screenshots by organizing them into a PDF with a clean, grid-based layout.

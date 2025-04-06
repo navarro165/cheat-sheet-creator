@@ -30,6 +30,7 @@ env/
 .vscode/
 *.swp
 *.swo
+idea.txt
 
 # OS
 .DS_Store
@@ -45,4 +46,5 @@ reference_images/
 *.pdf
 idea.txt
 reference_images/*
-!reference_images/.gitkeep 
+!reference_images/.gitkeep
+preview.pdf 
