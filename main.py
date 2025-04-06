@@ -33,8 +33,8 @@ class CheatSheetCreator:
     # Constants
     DEFAULT_COLUMNS = 3
     DEFAULT_MAX_PAGES = 2
-    DEFAULT_MARGIN_PTS = 10
-    DEFAULT_PADDING_PTS = 10
+    DEFAULT_MARGIN_PTS = 5
+    DEFAULT_PADDING_PTS = 5
     DEFAULT_THUMBNAIL_ASPECT_RATIO = 0.75
     DEFAULT_CANVAS_WIDTH = 800
     PREVIEW_FILENAME = "preview.pdf"
@@ -326,7 +326,6 @@ class CheatSheetCreator:
             messagebox.showwarning("No Images", "There are no images to export.")
             return None
 
-        # Ask for file path only if not provided (for actual export)
         is_temp_file = file_path is not None
         if not is_temp_file:
             file_path = filedialog.asksaveasfilename(
@@ -340,135 +339,155 @@ class CheatSheetCreator:
             # Create PDF
             c = canvas.Canvas(file_path, pagesize=letter)
             page_width, page_height = letter
-            
-            # Get settings from GUI
+
             margin = self.margin_var.get()
             num_columns = self.column_var.get()
             max_pages = self.page_var.get()
-            padding = self.DEFAULT_PADDING_PTS # Use constant for padding
-            
+            base_padding = self.DEFAULT_PADDING_PTS # Base padding
+            base_scale_percent = 0.95 # Base desired scaling percentage
+
             usable_width = page_width - 2 * margin
             usable_height = page_height - 2 * margin
-            
-            logging.info("\nPage dimensions:")
-            logging.info(f"  Total width: {page_width}pt, height: {page_height}pt")
-            logging.info(f"  Usable width: {usable_width}pt, height: {usable_height}pt")
-            
+
             if usable_width <= 0 or usable_height <= 0:
                 messagebox.showerror("Export Error", f"Margins ({margin} pts) are too large for the page size.")
-                if is_temp_file and os.path.exists(file_path):
-                    os.unlink(file_path)
+                if is_temp_file and os.path.exists(file_path): os.unlink(file_path)
                 return None
 
-            # Calculate cell width (fixed for all columns)
             cell_width = usable_width / num_columns
-            
-            logging.info(f"\nColumn layout:")
-            logging.info(f"  Number of columns: {num_columns}")
-            logging.info(f"  Cell width: {cell_width}pt")
-            logging.info(f"  Padding between images: {padding}pt")
-            
-            # Group images by column
-            columns = [[] for _ in range(num_columns)]
-            for i, frame in enumerate(self.image_frames):
-                col_idx = i % num_columns
-                columns[col_idx].append(frame)
-            
-            logging.info(f"\nImage distribution:")
-            for i, col in enumerate(columns):
-                logging.info(f"  Column {i+1}: {len(col)} images")
-            
-            # Process each page
+            total_available_page_height = usable_height * max_pages
+
+            # --- Guaranteed Scaling Calculation ---
+            # Simulate the layout virtually with base settings to find max required height
+            required_total_height = 0
+            if usable_height > 0 and num_columns > 0:
+                virtual_col_heights = [0.0] * num_columns
+                temp_image_index = 0
+                while temp_image_index < len(self.image_frames):
+                    # Find the column with the minimum current height
+                    target_col_idx = min(range(num_columns), key=lambda k: virtual_col_heights[k])
+
+                    frame = self.image_frames[temp_image_index]
+                    img_width, img_height = frame.original_image.size
+                    aspect_ratio = img_height / img_width if img_width else 1
+                    scaled_width = cell_width * base_scale_percent
+                    scaled_height = scaled_width * aspect_ratio
+
+                    # Add height to the target column (image + padding)
+                    # Add padding only if it's not the first image in that column
+                    padding_to_add = base_padding if virtual_col_heights[target_col_idx] > 0 else 0
+                    virtual_col_heights[target_col_idx] += scaled_height + padding_to_add
+                    temp_image_index += 1
+
+                # The required height is the height of the tallest column after placing all images
+                required_total_height = max(virtual_col_heights) if virtual_col_heights else 0
+                logging.info(f"Virtually calculated max required height (base settings): {required_total_height:.2f}pt")
+            else:
+                logging.warning("Cannot calculate required height (usable_height or num_columns is zero).")
+
+            scale_factor = 1.0
+            if required_total_height > total_available_page_height and required_total_height > 0:
+                scale_factor = total_available_page_height / required_total_height
+                # Apply safety buffer - scale slightly more aggressively
+                scale_factor *= 0.995
+                logging.warning(f"Images require scaling to fit. Applying buffered scale factor: {scale_factor:.4f}")
+            elif required_total_height <= 0:
+                 logging.warning("Could not estimate required height, proceeding without dynamic scaling.")
+
+            # Apply scale factor
+            padding = base_padding * scale_factor
+            scale_percent = base_scale_percent * scale_factor
+            logging.info(f"Using final scale_percent: {scale_percent:.4f}, padding: {padding:.2f}pt")
+            # --- End Guaranteed Scaling Calculation ---
+
+            # --- Image Placement Logic (Column-by-column) ---
             current_page = 0
-            while current_page < max_pages and any(columns):
-                if current_page > 0:
-                    c.showPage()
-                
-                logging.info(f"\nProcessing page {current_page + 1}")
-                
-                # Process each column
-                for col_idx, column in enumerate(columns):
-                    # Start from top of page
-                    y = page_height - margin
-                    
-                    logging.info(f"\n  Processing column {col_idx + 1}")
-                    logging.info(f"    Starting y position: {y}pt")
-                    
-                    # Process images in column until we run out of space
-                    while column and y > margin:
-                        frame = column[0]
-                        img_width, img_height = frame.original_image.size
-                        aspect_ratio = img_height / img_width
-                        scaled_width = cell_width * 0.90
-                        scaled_height = scaled_width * aspect_ratio
-                        
-                        # Check if image fits (considering padding below image)
-                        if y - scaled_height < margin:
-                            # If even the first image doesn't fit, break column processing
-                            if y == page_height - margin:
-                                logging.warning(f"      Image {os.path.basename(frame.image_path)} is too tall to fit on page {current_page + 1}, column {col_idx + 1}.")
-                            break
-                        
-                        # Calculate x position (centered in column)
-                        x = margin + (col_idx * cell_width) + (cell_width - scaled_width) / 2
-                        
+            image_index = 0
+            col_y_positions = [page_height - margin] * num_columns # Track current y-top for each column on the *current* page
+
+            while image_index < len(self.image_frames):
+                # Check if we need a new page
+                # A new page is needed if *all* columns on the current page are full *or* if it's the very first image
+                needs_new_page = all(y <= margin for y in col_y_positions)
+                is_first_image_on_first_page = (current_page == 0 and image_index == 0)
+
+                if needs_new_page or is_first_image_on_first_page:
+                    if current_page > 0: # If not the first page, save the previous one
+                        c.showPage()
+
+                    # Reset Y positions for the new page
+                    col_y_positions = [page_height - margin] * num_columns
+                    current_page += 1 # Increment page number
+                    logging.info(f"\nStarting Page {current_page}") # Log current page number
+
+
+                # Find the next available column slot (prioritize lower index columns)
+                placed_image = False
+                for col_idx in range(num_columns):
+                    y = col_y_positions[col_idx]
+                    if y <= margin: # Column is full for this page
+                        continue
+
+                    frame = self.image_frames[image_index]
+                    img_width, img_height = frame.original_image.size
+                    aspect_ratio = img_height / img_width if img_width else 1
+                    scaled_width = cell_width * scale_percent
+                    scaled_height = scaled_width * aspect_ratio
+
+                    # Check if the *current* image fits in *this* column
+                    if y - scaled_height >= margin:
+                        # Place the image
+                        x = margin + (col_idx * cell_width) + (cell_width * (1.0 - scale_percent)) / 2
                         filename = os.path.basename(frame.image_path)
-                        logging.info(f"\n    Placing {filename}:")
-                        logging.info(f"      Original size: {img_width}x{img_height}")
-                        logging.info(f"      Scaled size: {scaled_width:.2f}x{scaled_height:.2f}")
-                        logging.info(f"      Position: x={x:.2f}, y={y:.2f}")
-                        
+                        logging.info(f"  Placing {filename} on page {current_page}, col {col_idx + 1} at y={y:.2f}, scale={scale_percent:.2f}")
+
                         # Draw border
-                        c.setLineWidth(0.5)
+                        c.setLineWidth(1)
                         c.setStrokeColorRGB(0, 0, 0)
                         c.rect(x, y - scaled_height, scaled_width, scaled_height, stroke=1, fill=0)
-                        
-                        # Draw image using ImageReader for performance
+
+                        # Draw the image, letting ReportLab handle scaling
                         try:
+                            # Use the ORIGINAL image
                             img_reader = ImageReader(frame.original_image)
-                            c.drawImage(img_reader, x, y - scaled_height, width=scaled_width, height=scaled_height)
+                            # Let drawImage scale using width/height parameters
+                            c.drawImage(img_reader, x, y - scaled_height, width=scaled_width, height=scaled_height, preserveAspectRatio=True, anchor='c')
                         except Exception as img_err:
-                             logging.error(f"      Error drawing image {filename}: {img_err}")
-                             # Optionally draw a placeholder or skip
-                             c.setFillColorRGB(0.8, 0.8, 0.8) # Gray fill
-                             c.rect(x, y - scaled_height, scaled_width, scaled_height, stroke=0, fill=1)
-                             c.setFillColorRGB(0, 0, 0) # Black text
-                             c.setFont("Helvetica", 8)
-                             c.drawCentredString(x + scaled_width / 2, y - scaled_height / 2, f"Error loading {filename}")
-                        
-                        # Draw filename if not preview
-                        if not is_temp_file:
-                            c.setFont("Helvetica", self.FILENAME_FONT_SIZE)
-                            # Truncate filename if it's too long
-                            max_len = self.FILENAME_MAX_LEN
-                            short_name = (filename[:max_len] + '...') if len(filename) > max_len else filename
-                            # Draw filename at the bottom-left inside the border
-                            c.drawString(x + 2, y - scaled_height + 2, short_name)
-                        
-                        # Update y position for next image
-                        y -= (scaled_height + padding)
-                        logging.info(f"      Next y position: {y:.2f}pt")
-                        
-                        # Remove the placed image
-                        column.pop(0)
-                
-                current_page += 1
-            
+                            logging.error(f"      Error drawing image {filename}: {img_err}")
+                            # Draw placeholder if drawing fails
+                            c.setFillColorRGB(0.8, 0.8, 0.8)
+                            c.rect(x, y - scaled_height, scaled_width, scaled_height, stroke=0, fill=1)
+                            c.setFillColorRGB(0, 0, 0)
+                            c.setFont("Helvetica", 8)
+                            c.drawCentredString(x + scaled_width / 2, y - scaled_height / 2, f"Draw Error")
+
+                        # Update the Y position for the *next* image in *this* column on *this* page
+                        col_y_positions[col_idx] = y - (scaled_height + padding)
+                        image_index += 1
+                        placed_image = True
+                        break # Image placed, move to the next image
+
+                # If an image couldn't be placed in *any* column on the current page, force a page break
+                # (This addresses edge cases where one tall image blocks a column early)
+                if not placed_image and image_index < len(self.image_frames):
+                    # Mark all columns as 'full' for this page to trigger page break logic
+                    col_y_positions = [margin] * num_columns # Set y below margin to force break
+                    logging.debug(f"Could not place image {image_index} on page {current_page}, forcing page break.")
+
+            # --- End Image Placement ---
+
             c.save()
             if not is_temp_file:
                 logging.info(f"PDF exported to: {file_path}")
                 messagebox.showinfo("Export Successful", f"PDF exported successfully to: {file_path}")
             return file_path
-            
+
         except Exception as e:
-            logging.exception(f"Error exporting PDF: {str(e)}") # Use logging.exception to include traceback
+            logging.exception(f"Error exporting PDF: {str(e)}")
             messagebox.showerror("Export Error", f"An error occurred while exporting the PDF: {str(e)}")
-            # Clean up temporary file on error
             if is_temp_file and os.path.exists(file_path):
-                try:
-                    os.unlink(file_path)
-                except OSError as unlink_err:
-                    logging.error(f"Error removing temporary PDF file {file_path} after export error: {unlink_err}")
+                try: os.unlink(file_path)
+                except OSError as unlink_err: logging.error(f"Error removing temp file {file_path}: {unlink_err}")
             return None
 
 def setup_logging():
