@@ -91,6 +91,57 @@ The application will attempt to parse timestamps in this order:
 2. File modification time
 3. Current time (if all else fails)
 
+## Testing
+
+The application comes with comprehensive unit tests. These tests cover core functionality including:
+
+- Image frame creation and management
+- Timestamp parsing with multiple formats
+- Directory browsing and image loading
+- Layout calculations and UI updates
+- PDF preview and export functionality
+- Command line interface and arguments
+
+### Running Tests
+
+To run the test suite:
+
+```bash
+python -m unittest test_main.py
+```
+
+### Test Coverage
+
+To run tests with coverage reporting:
+
+```bash
+# Install coverage tools
+pip install coverage
+
+# Run tests with coverage
+coverage run -m unittest test_main.py
+
+# Display coverage report
+coverage report -m
+
+# Generate HTML coverage report
+coverage html
+```
+
+Current test coverage: 50% of main.py
+
+The tests focus on core application logic. The parts not covered by tests are primarily the detailed PDF layout rendering logic, which involves complex canvas operations and is more challenging to test programmatically.
+
+## Development
+
+For development work, you can install the package with development dependencies:
+
+```bash
+pip install -e ".[dev]"
+```
+
+This will install additional tools like pytest and pytest-cov.
+
 ## Troubleshooting
 
 If you encounter a "No module named 'reportlab'" error despite having installed the requirements, make sure to run the script using the Python interpreter from your virtual environment:
