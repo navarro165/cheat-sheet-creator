@@ -14,12 +14,28 @@ sys.modules['tkinter.messagebox'] = MagicMock()
 sys.modules['PIL'] = MagicMock()
 sys.modules['PIL.Image'] = MagicMock()
 sys.modules['PIL.ImageTk'] = MagicMock()
-sys.modules['reportlab'] = MagicMock()
-sys.modules['reportlab.pdfgen'] = MagicMock()
-sys.modules['reportlab.pdfgen.canvas'] = MagicMock()
-sys.modules['reportlab.lib'] = MagicMock()
-sys.modules['reportlab.lib.pagesizes'] = MagicMock()
-sys.modules['reportlab.lib.utils'] = MagicMock()
+
+# Create a proper mock for reportlab
+reportlab_mock = MagicMock()
+canvas_mock = MagicMock()
+pagesizes_mock = MagicMock()
+utils_mock = MagicMock()
+
+# Set up the letter pagesize
+pagesizes_mock.letter = (612, 792)
+
+# Set up the module structure
+reportlab_mock.pdfgen.canvas.Canvas = canvas_mock
+reportlab_mock.lib.pagesizes = pagesizes_mock
+reportlab_mock.lib.utils = utils_mock
+
+sys.modules['reportlab'] = reportlab_mock
+sys.modules['reportlab.pdfgen'] = reportlab_mock.pdfgen
+sys.modules['reportlab.pdfgen.canvas'] = reportlab_mock.pdfgen.canvas
+sys.modules['reportlab.lib'] = reportlab_mock.lib
+sys.modules['reportlab.lib.pagesizes'] = pagesizes_mock
+sys.modules['reportlab.lib.utils'] = utils_mock
+
 sys.modules['webbrowser'] = MagicMock()
 
 # Now import main after mocking modules
@@ -67,14 +83,14 @@ class TestCheatSheetCreator(unittest.TestCase):
             self.app.current_directory = "/test"
             self.app.dir_entry = MagicMock()
             self.app.PREVIEW_FILENAME = "preview.pdf"
-            self.app.DEFAULT_MARGIN_PTS = 10
-            self.app.DEFAULT_PADDING_PTS = 10
+            self.app.DEFAULT_MARGIN_PTS = 5
+            self.app.DEFAULT_PADDING_PTS = 5
             self.app.FILENAME_FONT_SIZE = 6
             self.app.FILENAME_MAX_LEN = 20
             self.app.column_var = MagicMock()
             self.app.column_var.get.return_value = 3
             self.app.margin_var = MagicMock()
-            self.app.margin_var.get.return_value = 10
+            self.app.margin_var.get.return_value = 5
             self.app.page_var = MagicMock()
             self.app.page_var.get.return_value = 2
             
@@ -369,6 +385,72 @@ class TestCheatSheetCreator(unittest.TestCase):
             
             # Assertions
             mock_error.assert_called_once()
+
+    def test_export_pdf_dynamic_scaling(self):
+        """Test dynamic scaling in export_pdf method"""
+        # Setup test data
+        self.app.image_frames = []
+        for i in range(3):
+            frame = MagicMock()
+            frame.original_image = MagicMock()
+            frame.original_image.size = (1000, 2000)  # Tall images
+            frame.image_path = f"test_image_{i}.png"
+            self.app.image_frames.append(frame)
+        
+        # Mock canvas instance
+        mock_canvas = MagicMock()
+        mock_canvas.save = MagicMock()
+        mock_canvas.drawImage = MagicMock()
+        mock_canvas.setLineWidth = MagicMock()
+        mock_canvas.setStrokeColorRGB = MagicMock()
+        mock_canvas.rect = MagicMock()
+        
+        # Set up Canvas class mock to return our instance
+        canvas_mock.return_value = mock_canvas
+        
+        # Mock ImageReader
+        mock_reader = MagicMock()
+        utils_mock.ImageReader.return_value = mock_reader
+        
+        with patch('os.path.exists', return_value=False), \
+             patch('os.path.basename', side_effect=lambda x: x), \
+             patch('logging.info'), \
+             patch('logging.warning'), \
+             patch('logging.error'), \
+             patch('tkinter.messagebox.showerror'), \
+             patch('tkinter.filedialog.asksaveasfilename', return_value="test.pdf"):
+            
+            # Call method with explicit file path to avoid dialog
+            result = self.app.export_pdf("test.pdf")
+            
+            # Assertions
+            self.assertIsNotNone(result, "Export should return a file path")
+            self.assertEqual(result, "test.pdf", "Export should return the correct file path")
+            
+            # Verify canvas operations
+            canvas_mock.assert_called()
+            mock_canvas.save.assert_called()
+            
+            # Verify image drawing was attempted
+            self.assertTrue(mock_canvas.drawImage.called, "No images were drawn")
+            
+            # Verify at least one image was drawn with scaling
+            draw_calls = mock_canvas.drawImage.call_args_list
+            self.assertTrue(len(draw_calls) > 0, "No drawImage calls found")
+            
+            # Check that at least one image was scaled down
+            scaled_width_found = False
+            for call in draw_calls:
+                args, kwargs = call
+                if len(args) >= 4:  # Check if width is in positional args
+                    if args[3] < 1000:  # width is typically the 4th arg
+                        scaled_width_found = True
+                        break
+                elif 'width' in kwargs and kwargs['width'] < 1000:
+                    scaled_width_found = True
+                    break
+            
+            self.assertTrue(scaled_width_found, "No scaled images found in drawImage calls")
 
 class TestMainFunction(unittest.TestCase):
     """Tests for the main function"""

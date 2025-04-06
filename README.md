@@ -75,8 +75,9 @@ This will automatically:
 
 - **Columns**: Adjustable from 1-6 columns (default: 3)
 - **Pages**: Set maximum pages from 1-10 (default: 2)
-- **Margins**: Adjust margins in points (default: 10pt)
-- **Image Spacing**: Fixed at 10pt padding between images
+- **Margins**: Adjust margins in points (default: 5pt)
+- **Image Spacing**: Fixed at 5pt padding between images
+- **Dynamic Scaling**: Automatically scales images to fit within page limits while maintaining aspect ratio
 
 ## Image Requirements
 
