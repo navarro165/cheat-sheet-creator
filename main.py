@@ -18,6 +18,11 @@ import re
 import logging
 import webbrowser
 
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
+
 class ImageFrame:
     def __init__(self, image_path, timestamp):
         self.image_path = image_path
@@ -28,12 +33,14 @@ class ImageFrame:
         self.frame = None
         self.label = None
         self.delete_button = None
+        self.parsed_from_filename = False
 
 class CheatSheetCreator:
     # Constants
     DEFAULT_COLUMNS = 3
     DEFAULT_MAX_PAGES = 2
-    DEFAULT_MARGIN_PTS = 5
+    DEFAULT_MARGIN_PTS = 24
+    DEFAULT_PNG_DPI = 300
     DEFAULT_PADDING_PTS = 5
     DEFAULT_THUMBNAIL_ASPECT_RATIO = 0.75
     DEFAULT_CANVAS_WIDTH = 800
@@ -95,6 +102,12 @@ class CheatSheetCreator:
                                      values=[str(i) for i in range(1, 11)], width=5)
         self.page_combo.pack(side=tk.LEFT)
         
+        # PNG DPI setting
+        ttk.Label(self.settings_frame, text="PNG DPI:").pack(side=tk.LEFT, padx=(20, 5))
+        self.dpi_var = tk.IntVar(value=self.DEFAULT_PNG_DPI)
+        self.dpi_entry = ttk.Entry(self.settings_frame, width=5, textvariable=self.dpi_var)
+        self.dpi_entry.pack(side=tk.LEFT)
+        
         # Buttons
         self.button_frame = ttk.Frame(self.control_frame)
         self.button_frame.pack(fill=tk.X, pady=5)
@@ -107,6 +120,9 @@ class CheatSheetCreator:
         
         self.export_button = ttk.Button(self.button_frame, text="Export PDF", command=self.export_pdf)
         self.export_button.pack(side=tk.LEFT, padx=5)
+        
+        self.export_png_button = ttk.Button(self.button_frame, text="Export PNGs", command=self.export_pngs)
+        self.export_png_button.pack(side=tk.LEFT, padx=5)
         
         # Create canvas for image grid
         self.canvas_frame = ttk.Frame(self.main_frame)
@@ -135,6 +151,7 @@ class CheatSheetCreator:
         filename = os.path.basename(image_path)
         logging.debug(f"\nParsing timestamp for: {filename}")
         timestamp = None
+        parsed_from_filename = False
         try:
             # Try to extract timestamp from filename (macOS format)
             # Example: Screenshot 2025-04-05 at 9.25.49 PM.png
@@ -163,6 +180,9 @@ class CheatSheetCreator:
                     timestamp = datetime.strptime(f"{date_str} {hours:02d}:{minutes:02d}:{seconds:02d}",
                                                 "%Y-%m-%d %H:%M:%S")
                     logging.debug(f"Successfully parsed timestamp from filename: {timestamp}")
+                
+                if timestamp:
+                    parsed_from_filename = True
 
         except Exception as e:
             logging.warning(f"Could not parse timestamp from filename '{filename}': {str(e)}")
@@ -186,7 +206,7 @@ class CheatSheetCreator:
              logging.error(f"Timestamp assignment failed unexpectedly for {filename}, using current time.")
              timestamp = datetime.now() # Final safety net
 
-        return timestamp
+        return timestamp, parsed_from_filename
 
     def browse_directory(self):
         directory = filedialog.askdirectory(initialdir=self.current_directory)
@@ -223,8 +243,9 @@ class CheatSheetCreator:
         temp_frames = [] # Create temp list first
         for image_path in image_files:
             try:
-                timestamp = self._parse_timestamp(image_path)
+                timestamp, parsed_from_filename = self._parse_timestamp(image_path)
                 frame = ImageFrame(image_path, timestamp)
+                frame.parsed_from_filename = parsed_from_filename
                 temp_frames.append(frame)
             except FileNotFoundError:
                  logging.error(f"Image file not found during ImageFrame creation: {image_path}")
@@ -269,6 +290,12 @@ class CheatSheetCreator:
             frame.frame = ttk.Frame(self.image_container)
             frame.frame.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
             
+            # Add a visual cue for images not sorted by filename timestamp
+            if not frame.parsed_from_filename:
+                 style = ttk.Style()
+                 style.configure(f"Fallback.TFrame", background="lightgray")
+                 frame.frame.configure(style=f"Fallback.TFrame")
+
             # Create thumbnail
             frame.thumbnail = frame.original_image.copy()
             frame.thumbnail.thumbnail((thumbnail_width, thumbnail_height), Image.Resampling.LANCZOS)
@@ -476,6 +503,25 @@ class CheatSheetCreator:
 
             # --- End Image Placement ---
 
+            # Final check to ensure all images were placed
+            if image_index < len(self.image_frames):
+                unplaced_images = [os.path.basename(f.image_path) for f in self.image_frames[image_index:]]
+                error_message = (f"Export failed: Could not place all images with the current settings.\n\n"
+                                 f"{len(unplaced_images)} image(s) could not be placed:\n"
+                                 f"- {', '.join(unplaced_images[:5])}{'...' if len(unplaced_images) > 5 else ''}\n\n"
+                                 f"Try increasing the 'Max Pages' setting or reducing the number of columns.")
+                logging.error(error_message)
+                messagebox.showerror("Export Error", error_message)
+                # Clean up temp file if created
+                c.save() # Save what we have for debugging if needed, but the main error is shown
+                if is_temp_file and os.path.exists(file_path):
+                    # Don't delete immediately, user might want to inspect it.
+                    # Let's rename it instead.
+                    debug_path = file_path.replace(".pdf", "_INCOMPLETE.pdf")
+                    os.rename(file_path, debug_path)
+                    logging.info(f"Incomplete PDF saved for debugging: {debug_path}")
+                return None
+
             c.save()
             if not is_temp_file:
                 logging.info(f"PDF exported to: {file_path}")
@@ -489,6 +535,67 @@ class CheatSheetCreator:
                 try: os.unlink(file_path)
                 except OSError as unlink_err: logging.error(f"Error removing temp file {file_path}: {unlink_err}")
             return None
+
+    def export_pngs(self):
+        if not self.image_frames:
+            logging.warning("No images to export")
+            messagebox.showwarning("No Images", "There are no images to export.")
+            return
+
+        if fitz is None:
+            messagebox.showerror("Dependency Error", "PyMuPDF is not installed. Please install it by running: pip install PyMuPDF")
+            return
+
+        # 1. Ask for output directory
+        output_dir = filedialog.askdirectory(title="Select Directory to Save PNGs")
+        if not output_dir:
+            return
+
+        # 2. Create a temporary PDF
+        temp_pdf_file = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+                temp_pdf_file = temp_file.name
+            
+            pdf_path = self.export_pdf(temp_pdf_file)
+            if not pdf_path:
+                messagebox.showerror("PNG Export Error", "Failed to create temporary PDF for conversion.")
+                return
+
+            # 3. Use PyMuPDF (fitz) to convert PDF to PNG
+            doc = fitz.open(pdf_path)
+            
+            # Create a subdirectory for the export
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            export_folder_name = f"cheat_sheet_{timestamp_str}"
+            final_output_dir = os.path.join(output_dir, export_folder_name)
+            os.makedirs(final_output_dir, exist_ok=True)
+
+
+            for i, page in enumerate(doc):
+                dpi = self.dpi_var.get()
+                if dpi <= 0:
+                    dpi = 300 # Fallback to a safe default
+                    logging.warning(f"Invalid DPI value provided, falling back to {dpi}.")
+
+                pix = page.get_pixmap(dpi=dpi)  # Higher DPI for better quality
+                output_filename = os.path.join(final_output_dir, f"page_{i+1}.png")
+                pix.save(output_filename)
+                logging.info(f"Saved {output_filename}")
+            
+            doc.close()
+            messagebox.showinfo("Export Successful", f"PNGs exported successfully to: {final_output_dir}")
+
+        except Exception as e:
+            logging.exception(f"Error exporting PNGs: {str(e)}")
+            messagebox.showerror("Export Error", f"An error occurred while exporting PNGs: {str(e)}")
+        finally:
+            # 4. Clean up the temporary PDF
+            if temp_pdf_file and os.path.exists(temp_pdf_file):
+                try:
+                    os.unlink(temp_pdf_file)
+                except OSError as e:
+                    logging.error(f"Error deleting temporary PDF {temp_pdf_file}: {e}")
 
 def setup_logging():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
